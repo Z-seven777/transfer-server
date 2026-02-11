@@ -4,15 +4,25 @@
 #include <unistd.h>
 #include <arpa/inet.h>
 #include <sys/socket.h>
-#include <sys/types.h>
 #include <netinet/in.h>
+#include <sys/stat.h>
 
 #define SERVER_PORT 8001
 #define BUF_SIZE 4096
 #define SAVE_DIR "received_files"
 
 void create_save_directory() {
-    system("mkdir -p " SAVE_DIR);
+    mkdir(SAVE_DIR, 0755);
+}
+
+int recv_all(int sock, void *buf, int len) {
+    int total = 0;
+    while (total < len) {
+        int n = recv(sock, (char*)buf + total, len - total, 0);
+        if (n <= 0) return -1;
+        total += n;
+    }
+    return total;
 }
 
 int main() {
@@ -21,59 +31,77 @@ int main() {
     struct sockaddr_in server_addr, client_addr;
     socklen_t addr_len = sizeof(client_addr);
 
-    printf("·þÎñÆ÷Æô¶¯...\n");
+    printf("æœåŠ¡å™¨å¯åŠ¨...\n");
+    fflush(stdout);
 
     server_fd = socket(AF_INET, SOCK_STREAM, 0);
     if (server_fd < 0) {
-        perror("socket ´´½¨Ê§°Ü");
+        perror("socket å¤±è´¥");
         return 1;
     }
+
+    int opt = 1;
+    setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
 
     server_addr.sin_family = AF_INET;
     server_addr.sin_port = htons(SERVER_PORT);
     server_addr.sin_addr.s_addr = INADDR_ANY;
 
     if (bind(server_fd, (struct sockaddr*)&server_addr, sizeof(server_addr)) < 0) {
-        perror("¶Ë¿Ú°ó¶¨Ê§°Ü");
+        perror("bind å¤±è´¥");
         return 1;
     }
 
     listen(server_fd, 5);
 
-    printf("¼àÌý¶Ë¿Ú %d ...\n", SERVER_PORT);
+    printf("ç›‘å¬ç«¯å£ %d ...\n", SERVER_PORT);
+    fflush(stdout);
 
     create_save_directory();
 
     while (1) {
 
-        printf("µÈ´ý¿Í»§¶ËÁ¬½Ó...\n");
+        printf("ç­‰å¾…å®¢æˆ·ç«¯è¿žæŽ¥...\n");
+        fflush(stdout);
 
         client_fd = accept(server_fd,
                            (struct sockaddr*)&client_addr,
                            &addr_len);
 
         if (client_fd < 0) {
-            perror("accept Ê§°Ü");
+            perror("accept å¤±è´¥");
             continue;
         }
 
-        printf("¿Í»§¶ËÒÑÁ¬½Ó\n");
+        printf("å®¢æˆ·ç«¯å·²è¿žæŽ¥\n");
+        fflush(stdout);
 
-        char meta[512] = {0};
-        int meta_len = recv(client_fd, meta, sizeof(meta), 0);
-
-        if (meta_len <= 0) {
-            printf("½ÓÊÕÔªÐÅÏ¢Ê§°Ü\n");
+        // 1ï¸âƒ£ è¯»å–æ–‡ä»¶å¤§å° (8å­—èŠ‚)
+        long file_size;
+        if (recv_all(client_fd, &file_size, sizeof(long)) < 0) {
+            printf("è¯»å–æ–‡ä»¶å¤§å°å¤±è´¥\n");
             close(client_fd);
             continue;
         }
 
-        char file_name[256];
-        long file_size = 0;
+        // 2ï¸âƒ£ è¯»å–æ–‡ä»¶åé•¿åº¦ (4å­—èŠ‚)
+        int name_len;
+        if (recv_all(client_fd, &name_len, sizeof(int)) < 0) {
+            printf("è¯»å–æ–‡ä»¶åé•¿åº¦å¤±è´¥\n");
+            close(client_fd);
+            continue;
+        }
 
-        sscanf(meta, "%[^|]|%ld", file_name, &file_size);
+        // 3ï¸âƒ£ è¯»å–æ–‡ä»¶å
+        char file_name[256] = {0};
+        if (recv_all(client_fd, file_name, name_len) < 0) {
+            printf("è¯»å–æ–‡ä»¶åå¤±è´¥\n");
+            close(client_fd);
+            continue;
+        }
 
-        printf("×¼±¸½ÓÊÕÎÄ¼þ: %s (%ld ×Ö½Ú)\n", file_name, file_size);
+        printf("å‡†å¤‡æŽ¥æ”¶æ–‡ä»¶: %s (%ld å­—èŠ‚)\n", file_name, file_size);
+        fflush(stdout);
 
         char save_path[512];
         snprintf(save_path, sizeof(save_path),
@@ -81,7 +109,7 @@ int main() {
 
         FILE* fp = fopen(save_path, "wb");
         if (!fp) {
-            perror("ÎÄ¼þ´´½¨Ê§°Ü");
+            perror("æ–‡ä»¶åˆ›å»ºå¤±è´¥");
             close(client_fd);
             continue;
         }
@@ -91,14 +119,12 @@ int main() {
 
         while (total_received < file_size) {
 
-            int recv_bytes = recv(client_fd,
-                                  buffer,
-                                  (file_size - total_received) > BUF_SIZE ?
-                                  BUF_SIZE : (file_size - total_received),
-                                  0);
+            int to_read = (file_size - total_received) > BUF_SIZE ?
+                          BUF_SIZE : (file_size - total_received);
 
+            int recv_bytes = recv(client_fd, buffer, to_read, 0);
             if (recv_bytes <= 0) {
-                printf("½ÓÊÕÖÐ¶Ï\n");
+                printf("æŽ¥æ”¶ä¸­æ–­\n");
                 break;
             }
 
@@ -109,10 +135,12 @@ int main() {
         fclose(fp);
 
         if (total_received == file_size) {
-            printf("ÎÄ¼þ½ÓÊÕÍê³É: %s\n", file_name);
+            printf("æ–‡ä»¶æŽ¥æ”¶å®Œæˆ: %s\n", file_name);
         } else {
-            printf("ÎÄ¼þ½ÓÊÕ²»ÍêÕû\n");
+            printf("æ–‡ä»¶æŽ¥æ”¶ä¸å®Œæ•´\n");
         }
+
+        fflush(stdout);
 
         close(client_fd);
     }
@@ -120,4 +148,3 @@ int main() {
     close(server_fd);
     return 0;
 }
-
